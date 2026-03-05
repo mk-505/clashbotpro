@@ -1,0 +1,278 @@
+#!/usr/bin/env python3
+"""
+MuMu Window Calibration Script
+================================
+
+This script helps you identify the exact position and dimensions of your MuMu emulator window.
+
+Steps:
+1. Run this script
+2. You'll see a full-screen screenshot
+3. Click and drag to select the MuMu game window
+4. Release to confirm
+5. Verify the captured region looks correct
+6. Note down the coordinates provided
+
+Usage:
+    python mumu_calibration.py
+"""
+
+import cv2
+import numpy as np
+from pathlib import Path
+import sys
+from typing import Tuple, Optional
+
+# Try cross-platform screen capture
+try:
+    import mss
+    HAS_MSS = True
+except ImportError:
+    HAS_MSS = False
+    try:
+        from PIL import ImageGrab
+        HAS_PIL = True
+    except ImportError:
+        HAS_PIL = False
+
+
+class MuMuCalibrator:
+    """Interactive MuMu window calibration tool."""
+    
+    def __init__(self):
+        self.screenshot = None
+        self.start_pos = None
+        self.end_pos = None
+        self.selecting = False
+        self.rect_img = None
+        self.window_name = "MuMu Calibration - Click and drag to select window"
+    
+    def take_screenshot(self) -> Optional[np.ndarray]:
+        """Take a screenshot of the entire screen."""
+        try:
+            if HAS_MSS:
+                with mss.mss() as sct:
+                    # Capture primary monitor
+                    monitor = sct.monitors[1]
+                    screenshot = sct.grab(monitor)
+                    # Convert RGBA to BGR
+                    frame = np.array(screenshot)
+                    frame = cv2.cvtColor(frame, cv2.COLOR_RGBA2BGR)
+                    return frame
+            elif HAS_PIL:
+                from PIL import ImageGrab
+                pil_img = ImageGrab.grab()
+                frame = cv2.cvtColor(np.array(pil_img), cv2.COLOR_RGB2BGR)
+                return frame
+            else:
+                print("❌ Error: Neither mss nor PIL available for screenshot")
+                print("   Install with: pip install mss pillow")
+                return None
+        except Exception as e:
+            print(f"❌ Error taking screenshot: {e}")
+            return None
+    
+    def mouse_callback(self, event, x, y, flags, param):
+        """Handle mouse events for selection."""
+        if event == cv2.EVENT_LBUTTONDOWN:
+            self.selecting = True
+            self.start_pos = (x, y)
+        
+        elif event == cv2.EVENT_MOUSEMOVE:
+            if self.selecting:
+                self.rect_img = self.screenshot.copy()
+                cv2.rectangle(self.rect_img, self.start_pos, (x, y), (0, 255, 0), 3)
+                cv2.imshow(self.window_name, self.rect_img)
+        
+        elif event == cv2.EVENT_LBUTTONUP:
+            self.selecting = False
+            self.end_pos = (x, y)
+            
+            # Draw final rectangle
+            cv2.rectangle(self.screenshot, self.start_pos, self.end_pos, (0, 255, 0), 3)
+            cv2.imshow(self.window_name, self.screenshot)
+            
+            print("\n✅ Selection complete!")
+            self.show_results()
+    
+    def show_results(self):
+        """Display and save the calibration results."""
+        if not self.start_pos or not self.end_pos:
+            print("❌ No selection made")
+            return
+        
+        x1, y1 = self.start_pos
+        x2, y2 = self.end_pos
+        
+        # Normalize coordinates
+        x_min, x_max = min(x1, x2), max(x1, x2)
+        y_min, y_max = min(y1, y2), max(y1, y2)
+        
+        width = x_max - x_min
+        height = y_max - y_min
+        
+        print("\n" + "=" * 60)
+        print("CALIBRATION RESULTS")
+        print("=" * 60)
+        print(f"\nMuMu Window Position (top-left corner):")
+        print(f"  X: {x_min}")
+        print(f"  Y: {y_min}")
+        print(f"\nMuMu Window Size:")
+        print(f"  Width:  {width}")
+        print(f"  Height: {height}")
+        print(f"\nAspect Ratio: {width/height:.2f}")
+        
+        print(f"\n--- Copy this into your MuMu adapter initialization ---")
+        print(f"\nwindow_pos = ({x_min}, {y_min})")
+        print(f"window_size = ({width}, {height})")
+        
+        print(f"\nOr as a single tuple:")
+        print(f"mumu_coords = ({x_min}, {y_min}, {width}, {height})")
+        
+        print("\n--- Full Python code ---")
+        print(f"from katacr.mumu_adapter import MuMuAdapter")
+        print(f"adapter = MuMuAdapter(")
+        print(f"    window_pos=({x_min}, {y_min}),")
+        print(f"    window_size=({width}, {height})")
+        print(f")")
+        print("=" * 60)
+        
+        # Save to file
+        self.save_calibration(x_min, y_min, width, height)
+    
+    def save_calibration(self, x: int, y: int, w: int, h: int):
+        """Save calibration to config file."""
+        config_path = Path(__file__).parent / "mumu_config.py"
+        
+        content = f'''"""
+MuMu Configuration (Auto-generated by mumu_calibration.py)
+"""
+
+# MuMu window position and size (in pixels)
+# Generated on: {Path(__file__).name}
+
+MUMU_WINDOW_POS = ({x}, {y})      # Top-left corner (x, y)
+MUMU_WINDOW_SIZE = ({w}, {h})     # Width, Height
+
+# For use with MuMuAdapter:
+# adapter = MuMuAdapter(window_pos=MUMU_WINDOW_POS, window_size=MUMU_WINDOW_SIZE)
+'''
+        
+        try:
+            config_path.write_text(content)
+            print(f"\n✅ Configuration saved to: {config_path}")
+            print(f"\nYou can now use:")
+            print(f"  from mumu_config import MUMU_WINDOW_POS, MUMU_WINDOW_SIZE")
+            print(f"  adapter = MuMuAdapter(MUMU_WINDOW_POS, MUMU_WINDOW_SIZE)")
+        except Exception as e:
+            print(f"\n⚠️  Could not save config: {e}")
+    
+    def verify_calibration(self, x: int, y: int, w: int, h: int):
+        """Test the calibration by capturing the region."""
+        print(f"\n🔍 Verifying calibration by capturing region...")
+        
+        try:
+            if HAS_MSS:
+                with mss.mss() as sct:
+                    monitor = {'left': x, 'top': y, 'width': w, 'height': h}
+                    screenshot = sct.grab(monitor)
+                    frame = np.array(screenshot)
+                    frame = cv2.cvtColor(frame, cv2.COLOR_RGBA2BGR)
+            else:
+                from PIL import ImageGrab
+                pil_img = ImageGrab.grab(bbox=(x, y, x + w, y + h))
+                frame = cv2.cvtColor(np.array(pil_img), cv2.COLOR_RGB2BGR)
+            
+            print(f"✅ Verification successful! Captured frame: {frame.shape}")
+            
+            # Show the captured region
+            cv2.imshow("MuMu Captured Region", frame)
+            print("\nPress any key to close preview...")
+            cv2.waitKey(0)
+            cv2.destroyAllWindows()
+            
+        except Exception as e:
+            print(f"❌ Verification failed: {e}")
+    
+    def run(self):
+        """Run the calibration."""
+        print("\n" + "=" * 60)
+        print("MuMu WINDOW CALIBRATOR")
+        print("=" * 60)
+        print("\nThis tool will help you find your MuMu window coordinates.")
+        print("\nInstructions:")
+        print("1. A screenshot will appear after clicking 'OK'")
+        print("2. Click and drag to select your MuMu game window")
+        print("3. The coordinates will be printed and saved to mumu_config.py")
+        print("\nTaking screenshot...")
+        
+        # Take screenshot
+        self.screenshot = self.take_screenshot()
+        
+        if self.screenshot is None:
+            print("\n❌ Failed to take screenshot")
+            return False
+        
+        print(f"✅ Screenshot captured: {self.screenshot.shape}")
+        
+        # Create window and set mouse callback
+        cv2.namedWindow(self.window_name, cv2.WINDOW_NORMAL)
+        cv2.resizeWindow(self.window_name, 1024, 768)
+        cv2.setMouseCallback(self.window_name, self.mouse_callback)
+        
+        # Display screenshot
+        print("\n📍 Click and drag to select MuMu window region")
+        print("   Press 'q' to quit without saving")
+        print("   Press 'v' to verify captured region\n")
+        
+        cv2.imshow(self.window_name, self.screenshot)
+        
+        # Wait for user input
+        while True:
+            key = cv2.waitKey(0) & 0xFF
+            
+            if key == ord('q'):
+                print("\n⛔ Cancelled without saving")
+                break
+            
+            elif key == ord('v'):
+                if self.start_pos and self.end_pos:
+                    x1, y1 = self.start_pos
+                    x2, y2 = self.end_pos
+                    x_min, x_max = min(x1, x2), max(x1, x2)
+                    y_min, y_max = min(y1, y2), max(y1, y2)
+                    w = x_max - x_min
+                    h = y_max - y_min
+                    self.verify_calibration(x_min, y_min, w, h)
+                else:
+                    print("⚠️  Please make a selection first")
+            
+            elif self.start_pos and self.end_pos:
+                # Save and exit
+                break
+        
+        cv2.destroyAllWindows()
+        return True
+
+
+def main():
+    """Main function."""
+    # Check dependencies
+    if not HAS_MSS and not HAS_PIL:
+        print("❌ Error: Need either mss or pillow for screenshots")
+        print("   Install with: pip install mss pillow")
+        sys.exit(1)
+    
+    calibrator = MuMuCalibrator()
+    success = calibrator.run()
+    
+    if success:
+        print("\n✅ Calibration complete!")
+        print("   Next: Copy the coordinates and create MuMuAdapter instance")
+    else:
+        print("\n❌ Calibration cancelled")
+        sys.exit(1)
+
+
+if __name__ == '__main__':
+    main()
